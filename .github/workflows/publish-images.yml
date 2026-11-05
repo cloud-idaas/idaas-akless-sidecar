@@ -119,15 +119,24 @@ jobs:
           done
 
           for platform in linux/amd64 linux/arm64; do
+            architecture="${platform#linux/}"
+            runtime_refs=()
+            # Classic Docker cannot map one index digest to two platform image IDs.
+            # Run each verified index's immutable platform child instead.
+            for ref in "${refs[@]}"; do
+              child_digest="$(docker buildx imagetools inspect "$ref" --format "{{range .Manifest.Manifests}}{{if and (eq .Platform.OS \"linux\") (eq .Platform.Architecture \"$architecture\")}}{{println .Digest}}{{end}}{{end}}")"
+              [[ "$child_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::Expected one valid child manifest for $platform in $ref."; exit 1; }
+              runtime_refs+=("${ref%@*}@$child_digest")
+            done
             options=(--rm --platform "$platform" --network none --read-only --cap-drop ALL --security-opt no-new-privileges)
-            version="$(docker run "${options[@]}" "${refs[0]}" --version)"
+            version="$(docker run "${options[@]}" "${runtime_refs[0]}" --version)"
             [[ "$version" == "idaas-akless-sidecar version=$RELEASE_VERSION revision=$RELEASE_REVISION" ]] || { echo "::error::Sidecar version mismatch on $platform."; exit 1; }
-            docker run "${options[@]}" --entrypoint /bin/sh "${refs[0]}" -ec \
+            docker run "${options[@]}" --entrypoint /bin/sh "${runtime_refs[0]}" -ec \
               '. /etc/os-release; test "$ID" = alinux; test "$(id -u)" = 10001'
             expected_arch=x64
             if [[ "$platform" == linux/arm64 ]]; then expected_arch=arm64; fi
             docker run "${options[@]}" --env "EXPECTED_ARCH=$expected_arch" \
-              --entrypoint node "${refs[1]}" -e '
+              --entrypoint node "${runtime_refs[1]}" -e '
               const assert = require("node:assert/strict");
               const http = require("node:http");
               const fs = require("node:fs");

@@ -125,7 +125,7 @@ This version is an example, not an existing release. Accepted tags have the form
 Publishing passes only when the complete job succeeds and the summary contains both verified index references:
 
 - Both remote indexes contain amd64 and arm64.
-- Each remote tag digest matches `containerimage.digest` from its own Buildx build; a changed tag fails verification. Platform and runtime checks then use that index digest.
+- Each remote tag digest matches `containerimage.digest` from its own Buildx build; a changed tag fails verification. Platform descriptors are read from that immutable index, then each runtime check uses its platform's child manifest digest. This avoids classic Docker's local digest conflict when running two architectures from the same index reference. The published deployment references remain index digests.
 - Both Sidecar platform variants report the expected version and full source commit.
 - Both business variants pass Node architecture, module-loading and local HTTP `/healthz` checks.
 - Deployment references use the multi-platform **index digest**, not one platform's child manifest digest.
@@ -143,6 +143,7 @@ ARM smoke checks use QEMU; they do not establish full native-ARM application beh
 | ACR login fails | Exact console username, Registry fixed password and target hostname; not AccessKeys or console passwords |
 | Push denied | Pre-created repositories, exact repository resource ARNs, network conditions |
 | Exec format error | QEMU initialization, remote platform descriptors, target binaries |
+| `cannot overwrite digest` while switching runtime-test architectures | Run each platform's child manifest digest selected from the verified immutable index; classic Docker cannot associate one local index reference with two platform image IDs |
 | One platform missing | Use one multi-platform push; do not overwrite a shared tag with separate single-platform pushes |
 | Remote tag no longer matches this build | Another publisher may have overwritten the tag; investigate and use the intended build digest or a new version, without accepting the replacement as this release |
 | Fixed password reset or revoked | Update ACR_PASSWORD and coordinate consumers before retrying; the one-hour temporary-password limit does not apply |

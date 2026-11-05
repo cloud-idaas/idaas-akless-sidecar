@@ -125,7 +125,7 @@ v1.2.3 只是操作示例，不代表已经发行。允许 vMAJOR.MINOR.PATCH �
 只有完整 job 成功，并生成两个镜像的验证摘要后才算本轮发布通过：
 
 - ACR 中两个 tag 均指向包含 amd64、arm64 的多架构索引。
-- 远端 tag digest 必须匹配各自 Buildx 构建记录的 containerimage.digest；tag 被覆盖时校验失败，随后按该索引 digest 复核平台和运行结果。
+- 远端 tag digest 必须匹配各自 Buildx 构建记录的 containerimage.digest；tag 被覆盖时校验失败。从该不可变索引读取平台描述符，再按各平台的子 manifest digest 运行检查，避免经典 Docker 存储在同一索引引用下切换架构时发生本地 digest 冲突。交付部署时仍使用索引 digest。
 - 两种平台的 Sidecar --version 与 tag/完整 commit 一致。
 - 两种平台的 Node 架构、业务模块加载和本地 HTTP /healthz 检查均成功。
 - 通过镜像索引 digest 引用，不能用单个平台子 manifest 的 digest 作为混合集群的统一镜像。
@@ -143,6 +143,7 @@ GitHub job 摘要会给出两个 name@sha256:... 的索引引用。混合集群�
 | ACR 登录失败 | 复制控制台的完整用户名，核对固定密码与 Registry；不使用 AccessKey 或控制台密码 |
 | push denied | 两个仓库是否预建，RAM 仓库 ARN 是否正确，网络访问条件是否满足 |
 | exec format error | QEMU 是否初始化；远端两平台 manifest 与目标二进制是否正确 |
+| 切换运行验证架构时出现 `cannot overwrite digest` | 从已核对的不可变索引选择各平台子 manifest digest 运行；经典 Docker 无法让同一本地索引引用关联两个平台的镜像 ID |
 | 双架构缺一项 | 不得把同一个 tag 分别推两次单架构镜像；使用一次双架构 push |
 | Remote tag no longer matches this build | 检查其他发布者是否覆盖 tag；核对本次构建 digest 或发布新版本，不把被替换的镜像当作本轮产物 |
 | 固定密码被重置或撤销 | 同步更新 ACR_PASSWORD，确认依赖方后重跑；不适用临时密码 1 小时限制 |
