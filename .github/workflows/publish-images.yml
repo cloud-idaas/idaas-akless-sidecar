@@ -1,10 +1,25 @@
 name: Publish multi-platform images
+run-name: ${{ inputs.verify_existing && format('Verify existing images {0}', inputs.release_tag) || format('Publish images {0}', github.ref_name) }}
 
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      verify_existing:
+        description: 'Verify existing images without building or pushing (run from main)'
+        type: boolean
+        default: false
+      release_tag:
+        description: 'Existing source/image version tag; required for verification only'
+        type: string
+      sidecar_digest:
+        description: 'Expected Sidecar index digest (sha256:...); required for verification only'
+        type: string
+      business_digest:
+        description: 'Expected business image index digest (sha256:...); required for verification only'
+        type: string
 
 permissions:
   contents: read
@@ -15,10 +30,12 @@ concurrency:
 
 jobs:
   publish:
-    # Forks and branch dispatches must not obtain the release identity.
+    # Ordinary branch dispatches are skipped; main may only verify existing images.
     if: >-
       github.repository == vars.RELEASE_REPOSITORY &&
-      github.ref_type == 'tag' && github.event.deleted != true
+      github.event.deleted != true &&
+      ((github.ref_type == 'tag' && !inputs.verify_existing) ||
+       (github.event_name == 'workflow_dispatch' && inputs.verify_existing && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -26,7 +43,10 @@ jobs:
     env:
       ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
       ACR_NS: ${{ vars.ACR_NS }}
-      RELEASE_VERSION: ${{ github.ref_name }}
+      VERIFY_EXISTING: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_existing }}
+      RELEASE_VERSION: ${{ inputs.verify_existing && inputs.release_tag || github.ref_name }}
+      EXISTING_SIDECAR_DIGEST: ${{ inputs.sidecar_digest }}
+      EXISTING_BUSINESS_DIGEST: ${{ inputs.business_digest }}
     steps:
       - name: Check out release source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -55,9 +75,39 @@ jobs:
           [[ "$ACR_REGISTRY" =~ ^[a-z0-9][a-z0-9.-]*[a-z0-9]$ ]] || { echo '::error::ACR_REGISTRY must be a hostname without a scheme or path.'; exit 1; }
           [[ "$ACR_NS" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { echo '::error::Invalid ACR namespace.'; exit 1; }
           [[ "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+([.-][a-zA-Z0-9]+)*)?$ && ${#RELEASE_VERSION} -le 128 ]] || { echo '::error::Use a version tag such as v1.2.3 or v1.2.3-rc.1, without build metadata.'; exit 1; }
+          if [[ "$VERIFY_EXISTING" == 'true' ]]; then
+            for key in EXISTING_SIDECAR_DIGEST EXISTING_BUSINESS_DIGEST; do
+              [[ "${!key}" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::Set $key to the original build's full index digest."; exit 1; }
+            done
+          fi
           revision="$(git rev-parse HEAD)"
           [[ "$revision" == "$GITHUB_SHA" ]] || { echo '::error::Checkout does not match the event commit.'; exit 1; }
           echo "RELEASE_REVISION=$revision" >> "$GITHUB_ENV"
+
+      - name: Check out original release source for verification
+        if: env.VERIFY_EXISTING == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.release_tag }}
+          path: release-source
+          persist-credentials: false
+
+      - name: Prepare verification of existing images
+        if: env.VERIFY_EXISTING == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision="$(git -C release-source rev-parse HEAD)"
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::Cannot resolve the original source tag commit.'; exit 1; }
+          echo "RELEASE_REVISION=$revision" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          for name, key in [('sidecar', 'EXISTING_SIDECAR_DIGEST'), ('business', 'EXISTING_BUSINESS_DIGEST')]:
+              path = Path(os.environ['RUNNER_TEMP']) / (name + '-build.json')
+              path.write_text(json.dumps({'containerimage.digest': os.environ[key]}))
+          PY
 
       - name: Enable ARM emulation
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
@@ -77,6 +127,7 @@ jobs:
           login-server: ${{ vars.ACR_REGISTRY }}
 
       - name: Build and push both multi-platform images
+        if: env.VERIFY_EXISTING != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -167,6 +218,10 @@ jobs:
           {
             echo "## Verified release: $RELEASE_VERSION"
             echo
+            if [[ "$VERIFY_EXISTING" == 'true' ]]; then
+              echo 'Verification only: existing immutable images were checked without building or pushing.'
+              echo
+            fi
             echo "Source commit: $RELEASE_REVISION"
             echo
             echo 'Both indexes contain linux/amd64 and linux/arm64; Alibaba Cloud Linux, non-root users and both platform smoke checks passed.'

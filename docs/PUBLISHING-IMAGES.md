@@ -98,7 +98,7 @@ Section 4's optional policy placeholders come from the owning cloud account ID u
 
 Setup order: confirm GitHub/ACR targets → obtain existing username/password and confirm access → fill three Variables/two Secrets → restrict `v*` tag creation, modification, deletion and bypass to release maintainers and protect workflow changes → publish using section 6.
 
-The workflow needs only `contents: read` and four SHA-pinned Actions. It does not handle PRs. Forks lack matching release configuration and Secrets. Branch dispatch is skipped.
+The workflow needs only `contents: read` and four SHA-pinned Actions. It does not handle PRs. Forks lack matching release configuration and Secrets. Ordinary branch dispatch is skipped; `main` additionally supports verification of existing images without building or pushing.
 
 ## 6. Publish a version
 
@@ -149,7 +149,19 @@ ARM smoke checks use QEMU; they do not establish full native-ARM application beh
 | Fixed password reset or revoked | Update ACR_PASSWORD and coordinate consumers before retrying; the one-hour temporary-password limit does not apply |
 | One image succeeds and the other fails | Cross-repository publishing is not atomic; partial results are not a verified release |
 
-Use **Re-run jobs** on the same tag run, or select that tag for `workflow_dispatch`. Branch dispatch is skipped; retry on a protected version tag.
+Use **Re-run jobs** on the same tag run, or select that tag for `workflow_dispatch`, only when the existing workflow and a rebuild are appropriate. Re-runs retain the original source ref and workflow revision; they do not pick up a fix from `main`.
+
+### Verify already-published immutable images
+
+When both images already exist and only acceptance failed, run the corrected verifier from `main` without rebuilding, pushing, moving a source tag or changing ACR tag immutability:
+
+1. Open **Actions → Publish multi-platform images → Run workflow** and select branch **main**.
+2. Enable **verify_existing** and set **release_tag** to the existing source/image tag.
+3. Set **sidecar_digest** and **business_digest** to the complete index digests recorded by the original build/run. Do not substitute child manifest digests or accept arbitrary current tags as evidence of the original build.
+4. Run the workflow. It checks out the existing source tag separately to resolve its original commit, skips Build and push, checks both remote tags against the supplied index digests, and runs both platforms using their child manifests. The Sidecar version/revision must match the original release tag/commit, not the newer `main` commit containing the verifier.
+5. Accept the new verification run only after the whole job succeeds and the summary reports verification only. The original failed run remains historical evidence; this does not retroactively turn it green.
+
+Missing/mismatched digests, missing source tags or runtime failures stop verification. Fixing the verifier does not authorize replacing existing image content.
 
 If ACR tag immutability rejects an existing tag, preserve known digests and assess the failed stage. If retry cannot finish without replacing an existing release, issue a new revision version. Do not disable immutability or force-move the source tag. Rebuilds may produce different digests because build inputs include package repositories.
 

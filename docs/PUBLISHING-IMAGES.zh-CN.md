@@ -98,7 +98,7 @@ GitHub 仓库 → Settings → Secrets and variables → Actions → Secrets →
 
 配置顺序：确认最终 GitHub 仓库和两个 ACR 仓库 → 获取现成用户名/固定密码并确认权限 → 填 3 个 Variables 和 2 个 Secrets → 保护 v* tag 和工作流修改权限 → 按第 6 节发布。仅允许发行维护者创建、修改、删除和绕过 tag 规则。
 
-工作流只需 contents: read，使用四个完整 SHA 固定的 Actions；不响应 PR。fork 默认没有匹配的 RELEASE_REPOSITORY 和发布 Secrets。分支手工执行会被跳过。
+工作流只需 contents: read，使用四个完整 SHA 固定的 Actions；不响应 PR。fork 默认没有匹配的 RELEASE_REPOSITORY 和发布 Secrets。普通分支手工执行会被跳过；main 额外支持只验证已有镜像，不构建或推送。
 
 ## 6. 准备并发布一个版本
 
@@ -149,7 +149,19 @@ GitHub job 摘要会给出两个 name@sha256:... 的索引引用。混合集群�
 | 固定密码被重置或撤销 | 同步更新 ACR_PASSWORD，确认依赖方后重跑；不适用临时密码 1 小时限制 |
 | 一个镜像成功，另一个失败 | 两仓库发布不是原子事务；不要把部分产物当作已验收发行物 |
 
-手工重跑应选择同一个版本 tag，可在 GitHub Actions 对该 tag 的运行执行 Re-run jobs，或用 workflow_dispatch 选择该 tag。分支手工执行会被跳过，应在已保护的版本 tag 上重跑。
+仅在原工作流与重新构建均适用时，才对原 tag 执行 Re-run jobs，或用 workflow_dispatch 选择该 tag。重跑沿用原始源码 ref 和工作流版本，不会取得 main 上的修复。
+
+### 只验证已发布的不可变镜像
+
+两个镜像均已存在且仅验收失败时，可从 main 运行修复后的校验器，无需重新构建、推送、移动源码 tag 或修改 ACR 版本不可变设置：
+
+1. 打开 **Actions → Publish multi-platform images → Run workflow**，分支选择 **main**。
+2. 勾选 **verify_existing**，**release_tag** 填已有的源码/镜像版本 tag。
+3. **sidecar_digest** 和 **business_digest** 填原构建/运行记录中的完整索引 digest。不能填单平台子 manifest digest，也不能仅凭当前同名 tag 就认定它是原构建产物。
+4. 执行后，工作流单独检出已有源码 tag 解析原始 commit，跳过 Build and push，核对两个远端 tag 与指定索引 digest，再按子 manifest 运行双架构检查。Sidecar 的版本和 revision 必须对应原 tag/commit，而非包含校验器修复的较新 main 提交。
+5. 完整 job 成功且摘要明确标识只验证后，才接受新的验证结果。原失败运行保留为历史记录，不会被追溯改成绿色。
+
+缺少或不匹配的 digest、缺失源码 tag、运行验证失败均阻止通过。修复校验器不代表允许替换既有镜像内容。
 
 如 ACR 开启版本不可变，已有 tag 可能拒绝重推；保留已知 digest，按实际失败阶段处理。若不能在不覆盖已有发行物的前提下完成重试，发布新的修订版本；不要关闭不可变策略或强推源码 tag。重新构建涉及包源等输入，不能保证每次产生相同 digest。
 
