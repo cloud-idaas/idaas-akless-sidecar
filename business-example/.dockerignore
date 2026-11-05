@@ -1,0 +1,13 @@
+# Both example Dockerfiles use explicit sources; local configuration stays out.
+**
+!Dockerfile
+!LICENSE
+!package.json
+!app.js
+!runtime.js
+!credentials-client.js
+!multicloud/Dockerfile
+!multicloud/package.json
+!multicloud/package-lock.json
+!multicloud/providers.cjs
+!multicloud/integration.cjs

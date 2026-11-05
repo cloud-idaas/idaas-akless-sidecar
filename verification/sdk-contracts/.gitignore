@@ -1,0 +1,10 @@
+venv/
+go-probe
+java-classpath.txt
+*.class
+*.json
+*.ini
+*.log
+node/node_modules/
+!node/package.json
+!node/package-lock.json

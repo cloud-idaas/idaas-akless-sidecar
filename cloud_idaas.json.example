@@ -1,0 +1,20 @@
+{
+  "idaasInstanceId": "<IDaaS 实例 ID>",
+  "clientId": "<IDaaS 控制台分配的 M2M 应用 clientId>",
+  "issuer": "https://<idaas-domain>/api/v2/iauths_system/oauth2",
+  "tokenEndpoint": "https://<idaas-domain>/api/v2/iauths_system/oauth2/token",
+  "scope": "urn:cloud:idaas:pam|cloud_account_role:obtain_access_credential",
+  "developerApiEndpoint": "<developer-api-host>",
+  "authnConfiguration": {
+    "identityType": "CLIENT",
+    "authnMethod": "OIDC",
+    "applicationFederatedCredentialName": "<IDaaS 应用中配置的 OIDC 联邦凭证名称>",
+    "clientDeployEnvironment": "KUBERNETES",
+    "oidcTokenFilePath": "",
+    "oidcTokenFilePathEnvVarName": "OIDC_TOKEN_FILE_PATH"
+  },
+  "httpConfiguration": {
+    "connectTimeout": 5000,
+    "readTimeout": 10000
+  }
+}

@@ -1,0 +1,174 @@
+name: Publish multi-platform images
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-images-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # Forks and branch dispatches must not obtain the release identity.
+    if: >-
+      github.repository == vars.RELEASE_REPOSITORY &&
+      github.ref_type == 'tag' && github.event.deleted != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      ACR_REGISTRY: ${{ vars.ACR_REGISTRY }}
+      ACR_NS: ${{ vars.ACR_NS }}
+      RELEASE_VERSION: ${{ github.ref_name }}
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Validate release configuration
+        env:
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for key in ACR_REGISTRY ACR_NS; do
+            if [[ -z "${!key}" || "${!key}" == *'<'* || "${!key}" == *'>'* ]]; then
+              echo "::error::Set the repository variable for $key; placeholders are not accepted."
+              exit 1
+            fi
+          done
+          for key in ACR_USERNAME ACR_PASSWORD; do
+            if [[ -z "${!key}" ]]; then
+              echo "::error::Set the repository Secret $key to the actual ACR login value."
+              exit 1
+            fi
+          done
+          [[ "$ACR_REGISTRY" =~ ^[a-z0-9][a-z0-9.-]*[a-z0-9]$ ]] || { echo '::error::ACR_REGISTRY must be a hostname without a scheme or path.'; exit 1; }
+          [[ "$ACR_NS" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { echo '::error::Invalid ACR namespace.'; exit 1; }
+          [[ "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+([.-][a-zA-Z0-9]+)*)?$ && ${#RELEASE_VERSION} -le 128 ]] || { echo '::error::Use a version tag such as v1.2.3 or v1.2.3-rc.1, without build metadata.'; exit 1; }
+          revision="$(git rev-parse HEAD)"
+          [[ "$revision" == "$GITHUB_SHA" ]] || { echo '::error::Checkout does not match the event commit.'; exit 1; }
+          echo "RELEASE_REVISION=$revision" >> "$GITHUB_ENV"
+
+      - name: Enable ARM emulation
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
+        with:
+          platforms: arm64
+
+      - name: Set up multi-platform builder
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver: docker-container
+
+      - name: Log in to ACR Enterprise
+        uses: aliyun/acr-login@1840dbaffb41a83ec8ce19d5c1088e8776eb9bc3
+        with:
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+          login-server: ${{ vars.ACR_REGISTRY }}
+
+      - name: Build and push both multi-platform images
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$ACR_REGISTRY/$ACR_NS"
+          docker buildx build --platform linux/amd64,linux/arm64 --push \
+            --provenance=false --sbom=false \
+            --build-arg "VERSION=$RELEASE_VERSION" \
+            --build-arg "REVISION=$RELEASE_REVISION" \
+            --metadata-file "$RUNNER_TEMP/sidecar-build.json" \
+            --tag "$prefix/idaas-akless-sidecar:$RELEASE_VERSION" \
+            --file Dockerfile .
+          docker buildx build --platform linux/amd64,linux/arm64 --push \
+            --provenance=false --sbom=false \
+            --metadata-file "$RUNNER_TEMP/business-build.json" \
+            --tag "$prefix/idaas-akless-business-example:$RELEASE_VERSION" \
+            --file business-example/Dockerfile business-example
+
+      - name: Verify remote indexes and both platform runtimes
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$ACR_REGISTRY/$ACR_NS"
+          refs=()
+          repositories=(idaas-akless-sidecar idaas-akless-business-example)
+          metadata_files=("$RUNNER_TEMP/sidecar-build.json" "$RUNNER_TEMP/business-build.json")
+          for index in "${!repositories[@]}"; do
+            repository="${repositories[$index]}"
+            built_digest="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["containerimage.digest"])' "${metadata_files[$index]}")"
+            [[ "$built_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo '::error::Build metadata did not return an image index digest.'; exit 1; }
+            tag="$prefix/$repository:$RELEASE_VERSION"
+            digest="$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}')"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo '::error::Registry did not return an image index digest.'; exit 1; }
+            [[ "$digest" == "$built_digest" ]] || { echo "::error::Remote tag no longer matches this build for $repository."; exit 1; }
+            ref="$prefix/$repository@$digest"
+            platforms="$(docker buildx imagetools inspect "$ref" --format '{{range .Manifest.Manifests}}{{println .Platform.OS .Platform.Architecture}}{{end}}')"
+            actual="$(printf '%s\n' "$platforms" | LC_ALL=C sort)"
+            expected=$'linux amd64\nlinux arm64'
+            [[ "$actual" == "$expected" ]] || { echo "::error::Unexpected platform index for $repository."; exit 1; }
+            refs+=("$ref")
+          done
+
+          for platform in linux/amd64 linux/arm64; do
+            options=(--rm --platform "$platform" --network none --read-only --cap-drop ALL --security-opt no-new-privileges)
+            version="$(docker run "${options[@]}" "${refs[0]}" --version)"
+            [[ "$version" == "idaas-akless-sidecar version=$RELEASE_VERSION revision=$RELEASE_REVISION" ]] || { echo "::error::Sidecar version mismatch on $platform."; exit 1; }
+            docker run "${options[@]}" --entrypoint /bin/sh "${refs[0]}" -ec \
+              '. /etc/os-release; test "$ID" = alinux; test "$(id -u)" = 10001'
+            expected_arch=x64
+            if [[ "$platform" == linux/arm64 ]]; then expected_arch=arm64; fi
+            docker run "${options[@]}" --env "EXPECTED_ARCH=$expected_arch" \
+              --entrypoint node "${refs[1]}" -e '
+              const assert = require("node:assert/strict");
+              const http = require("node:http");
+              const fs = require("node:fs");
+              assert.equal(process.arch, process.env.EXPECTED_ARCH);
+              assert.equal(process.getuid(), 1000);
+              assert.ok(process.versions.node.startsWith("24."));
+              assert.match(fs.readFileSync("/etc/os-release", "utf8"), /^ID="?alinux"?$/m);
+              require("/app/credentials-client");
+              const { handleRequest } = require("/app/runtime");
+              const server = http.createServer(handleRequest).listen(0, "127.0.0.1", () => {
+                http.get("http://127.0.0.1:" + server.address().port + "/healthz", res => {
+                  let body = "";
+                  res.on("data", chunk => { body += chunk; });
+                  res.on("end", () => {
+                    assert.equal(res.statusCode, 200);
+                    assert.equal(body, "ok");
+                    server.close(() => console.log("PASS " + process.arch + " business HTTP health"));
+                  });
+                  res.on("error", error => { throw error; });
+                }).on("error", error => { throw error; });
+              });
+              server.on("error", error => { throw error; });
+              setTimeout(() => { console.error("Business health timeout"); process.exit(1); }, 5000).unref();
+              '
+            echo "PASS $platform sidecar version and business runtime"
+          done
+
+          {
+            echo "## Verified release: $RELEASE_VERSION"
+            echo
+            echo "Source commit: $RELEASE_REVISION"
+            echo
+            echo 'Both indexes contain linux/amd64 and linux/arm64; Alibaba Cloud Linux, non-root users and both platform smoke checks passed.'
+            echo
+            printf -- '- `%s`\n' "${refs[@]}"
+            echo
+            echo 'ARM checks use QEMU on this runner. Live cloud credentials and Kubernetes integration were not tested by this workflow.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove registry login
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "$ACR_REGISTRY" ]]; then docker logout "$ACR_REGISTRY"; fi

@@ -1,0 +1,202 @@
+# Sidecar and business containers share Pod loopback.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: akless-demo
+  namespace: idaas-akless
+  labels:
+    app.kubernetes.io/name: idaas-akless-sidecar
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: akless-demo
+  template:
+    metadata:
+      labels:
+        app: akless-demo
+    spec:
+      serviceAccountName: idaas-akless-demo
+      # Use only explicitly projected, purpose-specific tokens.
+      automountServiceAccountToken: false
+      shareProcessNamespace: false
+      securityContext:
+        fsGroup: 20001
+        seccompProfile:
+          type: RuntimeDefault
+      # Create acr-secret, or use the ACK helper and omit imagePullSecrets.
+      imagePullSecrets:
+        - name: acr-secret
+      volumes:
+        - name: idaas-akless-client-config
+          configMap:
+            name: idaas-akless-config
+            items:
+              - key: idaas-akless-client-config.json
+                path: client-config.json
+        # OIDC token used to authenticate with the federated credential configured in IDaaS.
+        # Match the trust source audience and cluster issuer, and the credential's ServiceAccount subject.
+        # Kubernetes issues and rotates this token; mount only in the Sidecar.
+        - name: oidc-federated-token
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: "<idaas-bootstrap-audience>"
+                  expirationSeconds: 3600
+        # A separate volume prevents business access to the IDaaS identity.
+        - name: credential-auth-token
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: "idaas.akless.sidecar"
+                  expirationSeconds: 3600
+      # Native Sidecar starts before business and stops after business exits.
+      initContainers:
+        - name: idaas-akless-sidecar
+          restartPolicy: Always
+          # Replace with your built image.
+          image: <registry>/<namespace>/idaas-akless-sidecar:<version>
+          imagePullPolicy: Always
+          env:
+            - name: IDAAS_AKLESS_SIDECAR_LISTEN_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: idaas-akless-config
+                  key: IDAAS_AKLESS_SIDECAR_LISTEN_PORT
+                  optional: true
+            - name: IDAAS_AKLESS_CREDENTIAL_AUTH_TOKEN_FILE
+              value: /run/secrets/idaas-akless/credential-auth/token
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_SERVICE_ACCOUNT
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.serviceAccountName
+            # Used when SDK oidcTokenFilePath is empty; matches the token mount.
+            - name: OIDC_TOKEN_FILE_PATH
+              value: "/run/secrets/oidc-federated/token"
+            - name: IDAAS_AKLESS_DEFAULT_ROLE_ARN
+              valueFrom:
+                configMapKeyRef:
+                  name: idaas-akless-config
+                  key: IDAAS_AKLESS_DEFAULT_ROLE_ARN
+            - name: IDAAS_AKLESS_ALLOWED_ROLE_ARNS
+              valueFrom:
+                configMapKeyRef:
+                  name: idaas-akless-config
+                  key: IDAAS_AKLESS_ALLOWED_ROLE_ARNS
+            - name: IDAAS_AKLESS_CREDENTIAL_AUTH_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: idaas-akless-config
+                  key: IDAAS_AKLESS_CREDENTIAL_AUTH_ENABLED
+          args:
+            - --config
+            - /etc/idaas-akless/client-config.json
+          volumeMounts:
+            - name: idaas-akless-client-config
+              mountPath: /etc/idaas-akless
+              readOnly: true
+            - name: oidc-federated-token
+              mountPath: /run/secrets/oidc-federated
+              readOnly: true
+            - name: credential-auth-token
+              mountPath: /run/secrets/idaas-akless/credential-auth
+              readOnly: true
+          # Gate business startup on the local listener, without upstream calls.
+          startupProbe:
+            exec:
+              command:
+                - /usr/local/bin/idaas-akless-sidecar
+                - --healthcheck
+            periodSeconds: 2
+            timeoutSeconds: 4
+            failureThreshold: 30
+          # Probe local HTTP health through Pod loopback.
+          readinessProbe:
+            exec:
+              command:
+                - /usr/local/bin/idaas-akless-sidecar
+                - --healthcheck
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            # Must exceed the binary's 2s self-check timeout.
+            timeoutSeconds: 4
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+
+      containers:
+        - name: business
+          image: <registry>/<namespace>/idaas-akless-business-example:<version>
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: credential-auth-token
+              mountPath: /run/secrets/idaas-akless/credential-auth
+              readOnly: true
+          env:
+            - name: IDAAS_AKLESS_CREDENTIAL_AUTH_TOKEN_FILE
+              value: /run/secrets/idaas-akless/credential-auth/token
+            # Optional shared port; the business client supplies the default URI.
+            - name: IDAAS_AKLESS_SIDECAR_LISTEN_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: idaas-akless-config
+                  key: IDAAS_AKLESS_SIDECAR_LISTEN_PORT
+                  optional: true
+            # Use the same authentication mode as the Sidecar.
+            - name: IDAAS_AKLESS_CREDENTIAL_AUTH_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: idaas-akless-config
+                  key: IDAAS_AKLESS_CREDENTIAL_AUTH_ENABLED
+            # No role override: use the Sidecar default role.
+          ports:
+            - containerPort: 3000
+              name: http
+          # Process health is independent of credential retrieval.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            # Match the node user created by the ALinux business Dockerfile.
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

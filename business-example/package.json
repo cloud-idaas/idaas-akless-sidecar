@@ -1,0 +1,14 @@
+{
+  "name": "idaas-akless-business-example",
+  "version": "1.0.0",
+  "private": true,
+  "description": "IDaaS Akless Sidecar 的 Node.js 业务样例：通用 HTTP 拉取 STS 凭据",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "test": "node --test --experimental-test-coverage *.test.js"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

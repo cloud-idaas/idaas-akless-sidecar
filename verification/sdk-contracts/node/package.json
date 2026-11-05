@@ -1,0 +1,9 @@
+{
+  "name": "idaas-sdk-contract-verification",
+  "private": true,
+  "dependencies": {
+    "@alicloud/credentials": "2.4.7",
+    "@aws-sdk/credential-providers": "3.1160.0",
+    "tencentcloud-sdk-nodejs-common": "4.1.220"
+  }
+}

@@ -1,0 +1,335 @@
+# Isolated integration Pods; the main akless-demo Deployment is not modified.
+# Create idaas-akless-multicloud-config as documented in business-example/multicloud/README.md.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: akless-multicloud-test
+  namespace: idaas-akless
+  labels:
+    app: akless-multicloud-test
+spec:
+  serviceAccountName: idaas-akless-demo
+  automountServiceAccountToken: false
+  shareProcessNamespace: false
+  securityContext:
+    fsGroup: 20001
+    seccompProfile:
+      type: RuntimeDefault
+  imagePullSecrets:
+  - name: acr-secret
+  volumes:
+  - name: idaas-akless-client-config
+    configMap:
+      name: idaas-akless-multicloud-config
+      items:
+      - key: idaas-akless-client-config.json
+        path: client-config.json
+  - name: oidc-federated-token
+    projected:
+      defaultMode: 0440
+      sources:
+      - serviceAccountToken:
+          path: token
+          audience: <idaas-bootstrap-audience>
+          expirationSeconds: 3600
+  - name: credential-auth-token
+    projected:
+      defaultMode: 0440
+      sources:
+      - serviceAccountToken:
+          path: token
+          audience: idaas.akless.sidecar
+          expirationSeconds: 3600
+  initContainers:
+  - name: idaas-akless-sidecar
+    restartPolicy: Always
+    image: <registry>/<namespace>/idaas-akless-sidecar:<version>
+    imagePullPolicy: Always
+    env:
+    - name: IDAAS_AKLESS_SIDECAR_LISTEN_PORT
+      valueFrom:
+        configMapKeyRef:
+          name: idaas-akless-multicloud-config
+          key: IDAAS_AKLESS_SIDECAR_LISTEN_PORT
+          optional: true
+    - name: IDAAS_AKLESS_CREDENTIAL_AUTH_TOKEN_FILE
+      value: /run/secrets/idaas-akless/credential-auth/token
+    - name: POD_UID
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.uid
+    - name: POD_NAMESPACE
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.namespace
+    - name: POD_SERVICE_ACCOUNT
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.serviceAccountName
+    - name: OIDC_TOKEN_FILE_PATH
+      value: /run/secrets/oidc-federated/token
+    - name: IDAAS_AKLESS_DEFAULT_ROLE_ARN
+      valueFrom:
+        configMapKeyRef:
+          name: idaas-akless-multicloud-config
+          key: IDAAS_AKLESS_DEFAULT_ROLE_ARN
+    - name: IDAAS_AKLESS_ALLOWED_ROLE_ARNS
+      valueFrom:
+        configMapKeyRef:
+          name: idaas-akless-multicloud-config
+          key: IDAAS_AKLESS_ALLOWED_ROLE_ARNS
+    - name: IDAAS_AKLESS_CREDENTIAL_AUTH_ENABLED
+      valueFrom:
+        configMapKeyRef:
+          name: idaas-akless-multicloud-config
+          key: IDAAS_AKLESS_CREDENTIAL_AUTH_ENABLED
+    args:
+    - --config
+    - /etc/idaas-akless/client-config.json
+    volumeMounts:
+    - name: idaas-akless-client-config
+      mountPath: /etc/idaas-akless
+      readOnly: true
+    - name: oidc-federated-token
+      mountPath: /run/secrets/oidc-federated
+      readOnly: true
+    - name: credential-auth-token
+      mountPath: /run/secrets/idaas-akless/credential-auth
+      readOnly: true
+    startupProbe:
+      exec:
+        command:
+        - /usr/local/bin/idaas-akless-sidecar
+        - --healthcheck
+      periodSeconds: 2
+      timeoutSeconds: 4
+      failureThreshold: 30
+    readinessProbe:
+      exec:
+        command:
+        - /usr/local/bin/idaas-akless-sidecar
+        - --healthcheck
+      initialDelaySeconds: 3
+      periodSeconds: 5
+      timeoutSeconds: 4
+      failureThreshold: 3
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+        - ALL
+  containers:
+  - name: business
+    image: <registry>/<namespace>/idaas-akless-multicloud-test:<version>
+    imagePullPolicy: Always
+    volumeMounts:
+    - name: credential-auth-token
+      mountPath: /run/secrets/idaas-akless/credential-auth
+      readOnly: true
+    env:
+    - name: IDAAS_AKLESS_CREDENTIAL_AUTH_TOKEN_FILE
+      value: /run/secrets/idaas-akless/credential-auth/token
+    - name: IDAAS_AKLESS_TEST_ALIBABA_ROLE_ARN
+      value: "<alibaba-role-arn>"
+    - name: IDAAS_AKLESS_TEST_AWS_ROLE_ARN
+      value: "<aws-role-arn>"
+    - name: IDAAS_AKLESS_TEST_TENCENT_ROLE_ARN
+      value: "<tencent-role-arn>"
+    - name: IDAAS_AKLESS_SIDECAR_LISTEN_PORT
+      valueFrom:
+        configMapKeyRef:
+          name: idaas-akless-multicloud-config
+          key: IDAAS_AKLESS_SIDECAR_LISTEN_PORT
+          optional: true
+    - name: IDAAS_AKLESS_CREDENTIAL_AUTH_ENABLED
+      valueFrom:
+        configMapKeyRef:
+          name: idaas-akless-multicloud-config
+          key: IDAAS_AKLESS_CREDENTIAL_AUTH_ENABLED
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 384Mi
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      readOnlyRootFilesystem: true
+  restartPolicy: Never
+  activeDeadlineSeconds: 900
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: akless-multicloud-native-ali-test
+  namespace: idaas-akless
+  labels:
+    app: akless-multicloud-test
+spec:
+  serviceAccountName: idaas-akless-demo
+  automountServiceAccountToken: false
+  shareProcessNamespace: false
+  securityContext:
+    fsGroup: 20001
+    seccompProfile:
+      type: RuntimeDefault
+  imagePullSecrets:
+  - name: acr-secret
+  volumes:
+  - name: idaas-akless-client-config
+    configMap:
+      name: idaas-akless-multicloud-config
+      items:
+      - key: idaas-akless-client-config.json
+        path: client-config.json
+  - name: oidc-federated-token
+    projected:
+      defaultMode: 0440
+      sources:
+      - serviceAccountToken:
+          path: token
+          audience: <idaas-bootstrap-audience>
+          expirationSeconds: 3600
+  initContainers:
+  - name: idaas-akless-sidecar
+    restartPolicy: Always
+    image: <registry>/<namespace>/idaas-akless-sidecar:<version>
+    imagePullPolicy: Always
+    env:
+    - name: IDAAS_AKLESS_SIDECAR_LISTEN_PORT
+      valueFrom:
+        configMapKeyRef:
+          name: idaas-akless-multicloud-config
+          key: IDAAS_AKLESS_SIDECAR_LISTEN_PORT
+          optional: true
+    - name: IDAAS_AKLESS_CREDENTIAL_AUTH_TOKEN_FILE
+      value: /run/secrets/idaas-akless/credential-auth/token
+    - name: POD_UID
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.uid
+    - name: POD_NAMESPACE
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.namespace
+    - name: POD_SERVICE_ACCOUNT
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.serviceAccountName
+    - name: OIDC_TOKEN_FILE_PATH
+      value: /run/secrets/oidc-federated/token
+    - name: IDAAS_AKLESS_DEFAULT_ROLE_ARN
+      valueFrom:
+        configMapKeyRef:
+          name: idaas-akless-multicloud-config
+          key: IDAAS_AKLESS_DEFAULT_ROLE_ARN
+    - name: IDAAS_AKLESS_ALLOWED_ROLE_ARNS
+      valueFrom:
+        configMapKeyRef:
+          name: idaas-akless-multicloud-config
+          key: IDAAS_AKLESS_ALLOWED_ROLE_ARNS
+    - name: IDAAS_AKLESS_CREDENTIAL_AUTH_ENABLED
+      value: 'false'
+    args:
+    - --config
+    - /etc/idaas-akless/client-config.json
+    volumeMounts:
+    - name: idaas-akless-client-config
+      mountPath: /etc/idaas-akless
+      readOnly: true
+    - name: oidc-federated-token
+      mountPath: /run/secrets/oidc-federated
+      readOnly: true
+    startupProbe:
+      exec:
+        command:
+        - /usr/local/bin/idaas-akless-sidecar
+        - --healthcheck
+      periodSeconds: 2
+      timeoutSeconds: 4
+      failureThreshold: 30
+    readinessProbe:
+      exec:
+        command:
+        - /usr/local/bin/idaas-akless-sidecar
+        - --healthcheck
+      initialDelaySeconds: 3
+      periodSeconds: 5
+      timeoutSeconds: 4
+      failureThreshold: 3
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 10001
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+        - ALL
+  containers:
+  - name: business
+    image: <registry>/<namespace>/idaas-akless-multicloud-test:<version>
+    imagePullPolicy: Always
+    volumeMounts: []
+    env:
+    - name: IDAAS_AKLESS_CREDENTIAL_AUTH_TOKEN_FILE
+      value: /run/secrets/idaas-akless/credential-auth/token
+    - name: IDAAS_AKLESS_TEST_ALIBABA_ROLE_ARN
+      value: "<alibaba-role-arn>"
+    - name: IDAAS_AKLESS_TEST_AWS_ROLE_ARN
+      value: "<aws-role-arn>"
+    - name: IDAAS_AKLESS_TEST_TENCENT_ROLE_ARN
+      value: "<tencent-role-arn>"
+    - name: IDAAS_AKLESS_SIDECAR_LISTEN_PORT
+      valueFrom:
+        configMapKeyRef:
+          name: idaas-akless-multicloud-config
+          key: IDAAS_AKLESS_SIDECAR_LISTEN_PORT
+          optional: true
+    - name: IDAAS_AKLESS_CREDENTIAL_AUTH_ENABLED
+      value: 'false'
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 384Mi
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      readOnlyRootFilesystem: true
+    command:
+    - node
+    - integration.cjs
+    - --native-alibaba-uri
+  restartPolicy: Never
+  activeDeadlineSeconds: 900

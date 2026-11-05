@@ -1,0 +1,10 @@
+# Only the source required by the Sidecar Dockerfile enters the build context.
+**
+!Dockerfile
+!go.mod
+!go.sum
+!LICENSE
+!licenses/**
+!cmd/**/*.go
+!internal/**/*.go
+**/*_test.go

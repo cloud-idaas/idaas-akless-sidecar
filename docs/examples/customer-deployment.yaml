@@ -1,0 +1,186 @@
+# Customer quickstart. Render SIDECAR_IMAGE and BUSINESS_IMAGE with kubectl set image --local.
+# Apply with -n <your-namespace>; all referenced resources must be in that namespace.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: akless-example
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: akless-customer-example
+  template:
+    metadata:
+      labels:
+        app: akless-customer-example
+    spec:
+      serviceAccountName: akless-business
+      automountServiceAccountToken: false
+      hostNetwork: false
+      shareProcessNamespace: false
+      securityContext:
+        fsGroup: 20001
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: idaas-akless-client-config
+          configMap:
+            name: akless-settings
+            items:
+              - key: idaas-akless-client-config.json
+                path: client-config.json
+        # OIDC token used to authenticate with the federated credential configured in IDaaS.
+        # Match the trust source audience and cluster issuer, and the credential's ServiceAccount subject.
+        # Kubernetes issues and rotates this token; mount only in the Sidecar.
+        - name: oidc-federated-token
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: urn:example:idaas:bootstrap
+                  expirationSeconds: 3600
+        - name: credential-auth-token
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: idaas.akless.sidecar
+                  expirationSeconds: 3600
+        - name: demo-code
+          configMap:
+            name: akless-demo-code
+      initContainers:
+        - name: idaas-akless-sidecar
+          restartPolicy: Always
+          image: <SIDECAR_IMAGE>
+          imagePullPolicy: IfNotPresent
+          args: ["--config", "/etc/idaas-akless/client-config.json"]
+          env:
+            - name: IDAAS_AKLESS_SIDECAR_LISTEN_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: akless-settings
+                  key: IDAAS_AKLESS_SIDECAR_LISTEN_PORT
+                  optional: true
+            - name: IDAAS_AKLESS_CREDENTIAL_AUTH_TOKEN_FILE
+              value: /run/secrets/idaas-akless/credential-auth/token
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_SERVICE_ACCOUNT
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.serviceAccountName
+            - name: OIDC_TOKEN_FILE_PATH
+              value: /run/secrets/oidc-federated/token
+            - name: IDAAS_AKLESS_DEFAULT_ROLE_ARN
+              valueFrom:
+                configMapKeyRef:
+                  name: akless-settings
+                  key: IDAAS_AKLESS_DEFAULT_ROLE_ARN
+            - name: IDAAS_AKLESS_ALLOWED_ROLE_ARNS
+              valueFrom:
+                configMapKeyRef:
+                  name: akless-settings
+                  key: IDAAS_AKLESS_ALLOWED_ROLE_ARNS
+            - name: IDAAS_AKLESS_CREDENTIAL_AUTH_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: akless-settings
+                  key: IDAAS_AKLESS_CREDENTIAL_AUTH_ENABLED
+          volumeMounts:
+            - name: idaas-akless-client-config
+              mountPath: /etc/idaas-akless
+              readOnly: true
+            - name: oidc-federated-token
+              mountPath: /run/secrets/oidc-federated
+              readOnly: true
+            - name: credential-auth-token
+              mountPath: /run/secrets/idaas-akless/credential-auth
+              readOnly: true
+          startupProbe:
+            exec:
+              command: [/usr/local/bin/idaas-akless-sidecar, --healthcheck]
+            periodSeconds: 2
+            timeoutSeconds: 4
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command: [/usr/local/bin/idaas-akless-sidecar, --healthcheck]
+            periodSeconds: 5
+            timeoutSeconds: 4
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+      containers:
+        # Dependency-free smoke test; replace this container for production.
+        - name: business
+          image: <BUSINESS_IMAGE>
+          imagePullPolicy: IfNotPresent
+          command: [node, /app/app.js]
+          env:
+            - name: IDAAS_AKLESS_CREDENTIAL_AUTH_TOKEN_FILE
+              value: /run/secrets/idaas-akless/credential-auth/token
+            # Optional shared port; the business client supplies the default URI.
+            - name: IDAAS_AKLESS_SIDECAR_LISTEN_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: akless-settings
+                  key: IDAAS_AKLESS_SIDECAR_LISTEN_PORT
+                  optional: true
+            # Share the Sidecar's authentication mode; request timeout uses the client default.
+            - name: IDAAS_AKLESS_CREDENTIAL_AUTH_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: akless-settings
+                  key: IDAAS_AKLESS_CREDENTIAL_AUTH_ENABLED
+          volumeMounts:
+            - name: credential-auth-token
+              mountPath: /run/secrets/idaas-akless/credential-auth
+              readOnly: true
+            - name: demo-code
+              mountPath: /app
+              readOnly: true
+          ports:
+            - name: http
+              containerPort: 3000
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]

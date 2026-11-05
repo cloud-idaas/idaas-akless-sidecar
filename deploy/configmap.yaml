@@ -1,0 +1,37 @@
+# Deployment template. Replace every <...> placeholder before applying.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: idaas-akless-config
+  namespace: idaas-akless
+  labels:
+    app.kubernetes.io/name: idaas-akless-sidecar
+data:
+  # Optional override shared by both containers; absent or empty also uses 61765.
+  IDAAS_AKLESS_SIDECAR_LISTEN_PORT: "61765"
+  IDAAS_AKLESS_DEFAULT_ROLE_ARN: "<authorized-alibaba-role-arn>"
+  # Comma-separated roles; empty disables only the local allowlist, not IDaaS authorization.
+  IDAAS_AKLESS_ALLOWED_ROLE_ARNS: "<authorized-alibaba-role-arn>"
+  # Shared by Sidecar and business. Keep enabled for token-authenticated access.
+  IDAAS_AKLESS_CREDENTIAL_AUTH_ENABLED: "true"
+  idaas-akless-client-config.json: |
+    {
+      "idaasInstanceId": "<idaas-instance-id>",
+      "clientId": "<m2m-client-id>",
+      "issuer": "https://<idaas-domain>/api/v2/iauths_system/oauth2",
+      "tokenEndpoint": "https://<idaas-domain>/api/v2/iauths_system/oauth2/token",
+      "scope": "urn:cloud:idaas:pam|cloud_account_role:obtain_access_credential",
+      "developerApiEndpoint": "<developer-api-host>",
+      "authnConfiguration": {
+        "identityType": "CLIENT",
+        "authnMethod": "OIDC",
+        "applicationFederatedCredentialName": "<federated-credential-name>",
+        "clientDeployEnvironment": "KUBERNETES",
+        "oidcTokenFilePath": "",
+        "oidcTokenFilePathEnvVarName": "OIDC_TOKEN_FILE_PATH"
+      },
+      "httpConfiguration": {
+        "connectTimeout": 5000,
+        "readTimeout": 10000
+      }
+    }

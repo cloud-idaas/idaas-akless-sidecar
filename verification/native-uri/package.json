@@ -1,0 +1,12 @@
+{
+  "name": "idaas-native-uri-integration",
+  "private": true,
+  "scripts": {
+    "test": "node --test --experimental-test-coverage integration.test.cjs"
+  },
+  "dependencies": {
+    "@alicloud/credentials": "2.4.7",
+    "@alicloud/openapi-core": "1.0.8",
+    "@alicloud/sts20150401": "1.2.0"
+  }
+}

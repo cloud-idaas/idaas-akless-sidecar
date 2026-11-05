@@ -1,0 +1,51 @@
+# Go
+*.test
+*.out
+/bin/
+/dist/
+# go build 产物（模块名同名二进制）
+/idaas-akless-sidecar
+
+# Node
+node_modules/
+npm-debug.log*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Customer setup files may contain registry credentials.
+/.customer-quickstart/
+
+# Local tenant configuration, credentials and deployment overrides.
+.env
+.env.*
+!.env.example
+!.env.*.example
+cloud_idaas.json
+client-config.json
+.kube/
+kubeconfig
+kubeconfig.*
+*.kubeconfig
+*.pem
+*.key
+*.p12
+*.pfx
+*.local.yaml
+*.local.yml
+*.log
+
+# Test caches and generated reports; keep reproducible test sources.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+coverage/
+/docs/evidence/
+gitleaks-report*.json
+*-results.json

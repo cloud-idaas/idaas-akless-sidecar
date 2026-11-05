@@ -1,0 +1,27 @@
+version: "2"
+
+# Keep the language version aligned with go.mod; the tool version is pinned in Makefile.
+run:
+  timeout: 3m
+  go: "1.24"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - misspell
+  settings:
+    staticcheck:
+      # Preserve the original staticcheck + gosimple scope, without adding stylecheck.
+      checks: ["SA*", "S*"]
+
+formatters:
+  enable:
+    - gofmt
+  settings:
+    gofmt:
+      simplify: true
